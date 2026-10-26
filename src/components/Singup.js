@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import API_BASE_URL from '../config';
+import getApiUrl from '../config';
 import AuthPreview from './AuthPreview';
 
 const Singup = () => {
@@ -22,7 +22,7 @@ const Singup = () => {
 
         setSubmitting(true);
         try {
-            const response = await fetch(`${API_BASE_URL}/api/auth/createuser`, {
+            const response = await fetch(getApiUrl('/api/auth/createuser'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name: name.trim(), email: email.trim(), password, cpassword: confirmPassword })

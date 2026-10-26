@@ -1,12 +1,12 @@
 import { useCallback, useState } from "react";
 import NoteContext from "./noteContext";
-import API_BASE_URL from "../../config";
+import getApiUrl from "../../config";
 
 const NoteState = ({ children }) => {
     const [notes, setNotes] = useState([]);
 
     const getNotes = useCallback(async () => {
-        const response = await fetch(`${API_BASE_URL}/api/notes/fetchallnotes`, {
+        const response = await fetch(getApiUrl('/api/notes/fetchallnotes'), {
             method: 'GET',
             headers: {
                 'Content-Type': 'application/json',
@@ -31,7 +31,7 @@ const NoteState = ({ children }) => {
         formData.append('dueDate', dueDate);
         attachments.forEach((file) => formData.append('attachments', file));
 
-        const response = await fetch(`${API_BASE_URL}/api/notes/addnote`, {
+        const response = await fetch(getApiUrl('/api/notes/addnote'), {
             method: 'POST',
             headers: {
                 'auth-token': localStorage.getItem('token')
@@ -46,7 +46,7 @@ const NoteState = ({ children }) => {
     }, []);
 
     const deleteNote = useCallback(async (id) => {
-        const response = await fetch(`${API_BASE_URL}/api/notes/deletenote/${id}`, {
+        const response = await fetch(getApiUrl(`/api/notes/deletenote/${id}`), {
             method: 'DELETE',
             headers: {
                 'Content-Type': 'application/json',
@@ -61,7 +61,7 @@ const NoteState = ({ children }) => {
     }, []);
 
     const editNote = useCallback(async (id, title, description, tag, dueDate) => {
-        const response = await fetch(`${API_BASE_URL}/api/notes/updatenote/${id}`, {
+        const response = await fetch(getApiUrl(`/api/notes/updatenote/${id}`), {
             method: 'PUT',
             headers: {
                 'Content-Type': 'application/json',

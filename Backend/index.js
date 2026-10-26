@@ -603,7 +603,7 @@ const createServer = () => http.createServer(async (request, response) => {
 
 if (require.main === module) {
     const server = createServer();
-    server.listen(PORT, '127.0.0.1', () => {
+    server.listen(PORT, '0.0.0.0', () => {
         console.log(`iNotebook API listening at http://127.0.0.1:${PORT}`);
     });
     server.on('error', (error) => {

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import API_BASE_URL from '../config';
+import getApiUrl from '../config';
 
 const formatFileSize = (bytes) => (
     bytes < 1024 * 1024
@@ -28,7 +28,7 @@ const NoteAttachment = ({ attachment }) => {
         setLoading(true);
         setError('');
         try {
-            const response = await fetch(`${API_BASE_URL}/api/attachments/${attachment.id}`, {
+            const response = await fetch(getApiUrl(`/api/attachments/${attachment.id}`), {
                 headers: { 'auth-token': localStorage.getItem('token') }
             });
             if (!response.ok) {

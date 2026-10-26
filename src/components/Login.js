@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import API_BASE_URL from '../config';
+import getApiUrl from '../config';
 import AuthPreview from './AuthPreview';
 
 const Login = () => {
@@ -15,7 +15,7 @@ const Login = () => {
         setError('');
         setSubmitting(true);
         try {
-            const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
+            const response = await fetch(getApiUrl('/api/auth/login'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email: email.trim(), password })
