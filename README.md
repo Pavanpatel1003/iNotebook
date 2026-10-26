@@ -27,9 +27,10 @@ This setup is intended for local development. Before deploying it publicly, use 
 
 Vercel can host the React frontend, but this project’s API is a separate Node.js server. Deploy the API to a Node.js host that supports persistent storage, then configure:
 
-1. On the API host, use Node.js 22.13 or newer, set `PORT` as provided by the host, and set `DATABASE_PATH` to a location on persistent storage. The database, token-signing secret, and uploaded files must survive restarts. Do not use an ephemeral filesystem for user data.
-2. Set the API host's `FRONTEND_ORIGIN` to the exact public Vercel origin, for example `https://your-app.vercel.app` (no trailing slash).
-3. In Vercel, add the `REACT_APP_API_URL` environment variable with the API's public origin, for example `https://your-api.example.com` (no `/api` suffix), for every environment you deploy.
-4. Redeploy the Vercel frontend after setting the environment variable. Without it, production builds show a configuration error rather than trying to contact `localhost`.
+For Render, this repository includes a Blueprint in `render.yaml`. In Render, choose **New + → Blueprint**, connect this GitHub repository, and create the `inotebook-api` service. The Blueprint asks for `FRONTEND_ORIGIN`; enter the exact Vercel origin, for example `https://your-app.vercel.app` (no trailing slash). It provisions a 1 GB persistent disk mounted at `/var/data` for the SQLite database, token secret, and uploaded files. The `starter` service plan and persistent disk may incur charges; review Render's current pricing and approve it before creating the service.
+
+Wait for the Render service to finish deploying, then check `https://YOUR-RENDER-SERVICE.onrender.com/api/health`. Copy the service's public origin, without a trailing slash or `/api`.
+
+In Vercel, open **Project → Settings → Environment Variables** and add `REACT_APP_API_URL` with that Render origin for the **Production** environment. Save, then redeploy the frontend from **Deployments**. `PORT` is supplied by Render automatically. Without this environment variable, production builds show a configuration error rather than trying to contact `localhost`.
 
 The existing backend stores SQLite data and uploads on disk and supports attachments up to 200 MB. Choose an API host and storage plan that support persistent storage and the required upload size; Vercel's frontend deployment does not host this backend or its data.
