@@ -42,7 +42,7 @@ const postJson = (route, body, token) => fetch(`${baseUrl}${route}`, {
     body: JSON.stringify(body)
 });
 
-test('attachment size limits are 200 MB per file and in total', () => {
+test('free storage attachment limit is 50 MB per file and 200 MB per note', () => {
     const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     const makePng = (size) => ({
         originalName: 'large.png',
@@ -52,15 +52,21 @@ test('attachment size limits are 200 MB per file and in total', () => {
         }
     });
 
-    assert.equal(MAX_ATTACHMENT_SIZE, 200 * 1024 * 1024);
+    assert.equal(MAX_ATTACHMENT_SIZE, 50 * 1024 * 1024);
     assert.equal(MAX_TOTAL_ATTACHMENT_SIZE, 200 * 1024 * 1024);
     assert.equal(validateAttachments([makePng(MAX_ATTACHMENT_SIZE)]).length, 1);
     assert.throws(
         () => validateAttachments([makePng(MAX_ATTACHMENT_SIZE + 1)]),
-        /200 MB or smaller/
+        /50 MB or smaller/
     );
     assert.throws(
-        () => validateAttachments([makePng(100 * 1024 * 1024), makePng(100 * 1024 * 1024 + 1)]),
+        () => validateAttachments([
+            makePng(50 * 1024 * 1024),
+            makePng(50 * 1024 * 1024),
+            makePng(50 * 1024 * 1024),
+            makePng(50 * 1024 * 1024),
+            makePng(1)
+        ]),
         /total 200 MB or less/
     );
 });

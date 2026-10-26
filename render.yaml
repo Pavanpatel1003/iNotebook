@@ -2,20 +2,22 @@ services:
   - type: web
     name: inotebook-api
     runtime: node
-    plan: starter
+    plan: free
     buildCommand: npm install
     startCommand: npm run backend
     healthCheckPath: /api/health
-    disk:
-      name: inotebook-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: NODE_VERSION
         value: 22.13.0
       - key: NODE_ENV
         value: production
-      - key: DATABASE_PATH
-        value: /var/data/inotebook.sqlite
       - key: FRONTEND_ORIGIN
         sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: TOKEN_SECRET
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: note-attachments

@@ -4,6 +4,7 @@ const path = require('node:path');
 const { promisify } = require('node:util');
 const { DatabaseSync } = require('node:sqlite');
 const http = require('node:http');
+const { createClient } = require('@supabase/supabase-js');
 
 const scrypt = promisify(crypto.scrypt);
 const DATA_DIRECTORY = path.join(__dirname, 'data');
@@ -12,8 +13,23 @@ const UPLOAD_DIRECTORY = path.join(path.dirname(DATABASE_PATH), 'uploads');
 const PORT = Number(process.env.PORT || 5000);
 const MAX_REQUEST_SIZE = 210 * 1024 * 1024;
 const MAX_TOTAL_ATTACHMENT_SIZE = 200 * 1024 * 1024;
-const MAX_ATTACHMENT_SIZE = 200 * 1024 * 1024;
+const MAX_ATTACHMENT_SIZE = 50 * 1024 * 1024;
 const MAX_ATTACHMENTS = 5;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const SUPABASE_STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'note-attachments';
+const useSupabase = Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
+if (Boolean(SUPABASE_URL) !== Boolean(SUPABASE_SERVICE_ROLE_KEY)) {
+    throw new Error('Set both SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.');
+}
+if (process.env.NODE_ENV === 'production' && !useSupabase) {
+    throw new Error('Configure Supabase before starting the production API.');
+}
+const supabase = useSupabase
+    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+        auth: { autoRefreshToken: false, persistSession: false }
+    })
+    : null;
 const FRONTEND_ORIGINS = new Set(
     (process.env.FRONTEND_ORIGIN || 'http://localhost:3000,http://127.0.0.1:3000')
         .split(',')
@@ -27,52 +43,62 @@ const NOTE_DESCRIPTION_MAX = 2000;
 const NOTE_TAG_MAX = 40;
 const TOKEN_LIFETIME_SECONDS = 30 * 24 * 60 * 60;
 
-fs.mkdirSync(path.dirname(DATABASE_PATH), { recursive: true });
-const database = new DatabaseSync(DATABASE_PATH);
-database.exec(`
-    PRAGMA foreign_keys = ON;
-    PRAGMA journal_mode = WAL;
-    CREATE TABLE IF NOT EXISTS users (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        email TEXT NOT NULL UNIQUE COLLATE NOCASE,
-        password_hash TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS notes (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        title TEXT NOT NULL,
-        description TEXT NOT NULL,
-        tag TEXT NOT NULL DEFAULT '',
-        due_date TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS attachments (
-        id TEXT PRIMARY KEY,
-        note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-        original_name TEXT NOT NULL,
-        stored_name TEXT NOT NULL UNIQUE,
-        mime_type TEXT NOT NULL,
-        size_bytes INTEGER NOT NULL,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-`);
-const noteColumns = new Set(database.prepare('PRAGMA table_info(notes)').all().map((column) => column.name));
-if (!noteColumns.has('due_date')) {
-    database.exec("ALTER TABLE notes ADD COLUMN due_date TEXT NOT NULL DEFAULT ''");
+let database = null;
+if (!useSupabase) {
+    fs.mkdirSync(path.dirname(DATABASE_PATH), { recursive: true });
+    database = new DatabaseSync(DATABASE_PATH);
+    database.exec(`
+        PRAGMA foreign_keys = ON;
+        PRAGMA journal_mode = WAL;
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS notes (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            tag TEXT NOT NULL DEFAULT '',
+            due_date TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS attachments (
+            id TEXT PRIMARY KEY,
+            note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+            original_name TEXT NOT NULL,
+            stored_name TEXT NOT NULL UNIQUE,
+            mime_type TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+    `);
+    const noteColumns = new Set(database.prepare('PRAGMA table_info(notes)').all().map((column) => column.name));
+    if (!noteColumns.has('due_date')) {
+        database.exec("ALTER TABLE notes ADD COLUMN due_date TEXT NOT NULL DEFAULT ''");
+    }
 }
 
-const secretPath = path.join(path.dirname(DATABASE_PATH), '.token-secret');
 let tokenSecret;
-try {
-    tokenSecret = fs.readFileSync(secretPath);
-} catch (error) {
-    if (error.code !== 'ENOENT') {
-        throw error;
+if (useSupabase) {
+    if (typeof process.env.TOKEN_SECRET !== 'string' || Buffer.byteLength(process.env.TOKEN_SECRET) < 32) {
+        throw new Error('Set TOKEN_SECRET to a random value with at least 32 bytes.');
     }
-    tokenSecret = crypto.randomBytes(32);
-    fs.writeFileSync(secretPath, tokenSecret, { flag: 'wx', mode: 0o600 });
+    tokenSecret = Buffer.from(process.env.TOKEN_SECRET);
+} else {
+    const secretPath = path.join(path.dirname(DATABASE_PATH), '.token-secret');
+    try {
+        tokenSecret = fs.readFileSync(secretPath);
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            throw error;
+        }
+        tokenSecret = crypto.randomBytes(32);
+        fs.writeFileSync(secretPath, tokenSecret, { flag: 'wx', mode: 0o600 });
+    }
 }
 
 const sendJson = (response, status, data) => {
@@ -220,7 +246,7 @@ const validateAttachments = (files) => {
         throw Object.assign(new Error(`Attach up to ${MAX_ATTACHMENTS} files to one note.`), { status: 400 });
     }
     if (files.some((file) => file.buffer.length === 0 || file.buffer.length > MAX_ATTACHMENT_SIZE)) {
-        throw Object.assign(new Error('Each attachment must be 200 MB or smaller.'), { status: 400 });
+        throw Object.assign(new Error('Each attachment must be 50 MB or smaller on the free storage plan.'), { status: 400 });
     }
     if (files.reduce((total, file) => total + file.buffer.length, 0) > MAX_TOTAL_ATTACHMENT_SIZE) {
         throw Object.assign(new Error('Attachments must total 200 MB or less.'), { status: 400 });
@@ -250,32 +276,326 @@ const validateAttachments = (files) => {
     });
 };
 
-const saveAttachmentFiles = async (files) => {
-    await fs.promises.mkdir(UPLOAD_DIRECTORY, { recursive: true });
+const saveAttachmentFiles = async (files, userId, noteId) => {
+    if (!useSupabase) {
+        await fs.promises.mkdir(UPLOAD_DIRECTORY, { recursive: true });
+    }
     const saved = [];
     try {
         for (const file of files) {
-            const storedName = `${crypto.randomUUID()}${file.extension}`;
-            const filePath = path.join(UPLOAD_DIRECTORY, storedName);
-            await fs.promises.writeFile(filePath, file.buffer, { flag: 'wx', mode: 0o600 });
-            saved.push({ ...file, id: crypto.randomUUID(), storedName, filePath });
+            const storedName = useSupabase
+                ? `${userId}/${noteId}/${crypto.randomUUID()}${file.extension}`
+                : `${crypto.randomUUID()}${file.extension}`;
+            const savedFile = { ...file, id: crypto.randomUUID(), storedName };
+            if (useSupabase) {
+                const { error } = await supabase.storage.from(SUPABASE_STORAGE_BUCKET).upload(
+                    storedName,
+                    file.buffer,
+                    { contentType: file.mimeType, upsert: false }
+                );
+                if (error) {
+                    throw error;
+                }
+            } else {
+                savedFile.filePath = path.join(UPLOAD_DIRECTORY, storedName);
+                await fs.promises.writeFile(savedFile.filePath, file.buffer, { flag: 'wx', mode: 0o600 });
+            }
+            saved.push(savedFile);
         }
         return saved;
     } catch (error) {
-        await Promise.all(saved.map((file) => fs.promises.unlink(file.filePath).catch((cleanupError) => {
-            console.error(`Could not clean up uploaded file ${file.storedName}:`, cleanupError);
-        })));
+        await deleteStoredFiles(saved);
         throw error;
     }
 };
 
-const getAttachmentDetails = (attachmentId, userId) => database.prepare(`
-    SELECT a.id, a.original_name AS name, a.stored_name, a.mime_type AS mimeType,
-        a.size_bytes AS sizeBytes
-    FROM attachments a
-    JOIN notes n ON n.id = a.note_id
-    WHERE a.id = ? AND n.user_id = ?
-`).get(attachmentId, userId);
+const deleteStoredFiles = async (files) => {
+    if (useSupabase) {
+        if (files.length === 0) {
+            return;
+        }
+        const { error } = await supabase.storage.from(SUPABASE_STORAGE_BUCKET)
+            .remove(files.map((file) => file.stored_name || file.storedName));
+        if (error) {
+            console.error('Could not remove uploaded files from Supabase Storage:', error);
+        }
+        return;
+    }
+    await Promise.all(files.map((file) => fs.promises.unlink(file.filePath || path.join(UPLOAD_DIRECTORY, file.stored_name))
+        .catch((error) => {
+            if (error.code !== 'ENOENT') {
+                console.error(`Could not delete uploaded file ${file.storedName || file.stored_name}:`, error);
+            }
+        })));
+};
+
+const getUserByEmail = async (email) => {
+    if (!useSupabase) {
+        return database.prepare('SELECT id, password_hash FROM users WHERE email = ?').get(email);
+    }
+    const { data, error } = await supabase.from('users')
+        .select('id, password_hash')
+        .eq('email', email)
+        .maybeSingle();
+    if (error) {
+        throw error;
+    }
+    return data;
+};
+
+const createUser = async (id, name, email, passwordHash) => {
+    if (!useSupabase) {
+        database.prepare('INSERT INTO users (id, name, email, password_hash) VALUES (?, ?, ?, ?)')
+            .run(id, name, email, passwordHash);
+        return;
+    }
+    const { error } = await supabase.from('users').insert({
+        id,
+        name,
+        email,
+        password_hash: passwordHash
+    });
+    if (error) {
+        throw error;
+    }
+};
+
+const getNotesForUser = async (userId) => {
+    if (!useSupabase) {
+        const notes = database.prepare(`
+            SELECT id AS _id, title, description, tag,
+                due_date AS dueDate, created_at AS createdAt
+            FROM notes WHERE user_id = ? ORDER BY created_at DESC
+        `).all(userId);
+        if (notes.length === 0) {
+            return [];
+        }
+        const placeholders = notes.map(() => '?').join(', ');
+        const attachments = database.prepare(`
+            SELECT id, note_id AS noteId, original_name AS name,
+                mime_type AS mimeType, size_bytes AS sizeBytes
+            FROM attachments WHERE note_id IN (${placeholders})
+            ORDER BY created_at ASC
+        `).all(...notes.map((note) => note._id));
+        return attachFilesToNotes(notes, attachments);
+    }
+
+    const { data: notes, error: notesError } = await supabase.from('notes')
+        .select('id, title, description, tag, due_date, created_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false });
+    if (notesError) {
+        throw notesError;
+    }
+    if (notes.length === 0) {
+        return [];
+    }
+    const { data: attachments, error: attachmentsError } = await supabase.from('attachments')
+        .select('id, note_id, original_name, mime_type, size_bytes')
+        .in('note_id', notes.map((note) => note.id))
+        .order('created_at', { ascending: true });
+    if (attachmentsError) {
+        throw attachmentsError;
+    }
+    return attachFilesToNotes(notes.map((note) => ({
+        _id: note.id,
+        title: note.title,
+        description: note.description,
+        tag: note.tag,
+        dueDate: note.due_date,
+        createdAt: note.created_at
+    })), attachments.map((file) => ({
+        id: file.id,
+        noteId: file.note_id,
+        name: file.original_name,
+        mimeType: file.mime_type,
+        sizeBytes: file.size_bytes
+    })));
+};
+
+const attachFilesToNotes = (notes, attachments) => {
+    const attachmentsByNote = new Map();
+    for (const attachment of attachments) {
+        const noteAttachments = attachmentsByNote.get(attachment.noteId) || [];
+        noteAttachments.push({
+            id: attachment.id,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes
+        });
+        attachmentsByNote.set(attachment.noteId, noteAttachments);
+    }
+    return notes.map((note) => ({
+        ...note,
+        attachments: attachmentsByNote.get(note._id) || []
+    }));
+};
+
+const createNoteWithAttachments = async (id, userId, note, savedFiles) => {
+    if (!useSupabase) {
+        let transactionStarted = false;
+        try {
+            database.exec('BEGIN IMMEDIATE');
+            transactionStarted = true;
+            database.prepare(`
+                INSERT INTO notes (id, user_id, title, description, tag, due_date)
+                VALUES (?, ?, ?, ?, ?, ?)
+            `).run(id, userId, note.title, note.description, note.tag, note.dueDate);
+            const insertAttachment = database.prepare(`
+                INSERT INTO attachments (id, note_id, original_name, stored_name, mime_type, size_bytes)
+                VALUES (?, ?, ?, ?, ?, ?)
+            `);
+            for (const file of savedFiles) {
+                insertAttachment.run(file.id, id, file.originalName, file.storedName, file.mimeType, file.sizeBytes);
+            }
+            database.exec('COMMIT');
+            transactionStarted = false;
+        } catch (error) {
+            if (transactionStarted) {
+                database.exec('ROLLBACK');
+            }
+            await deleteStoredFiles(savedFiles);
+            throw error;
+        }
+        return database.prepare('SELECT created_at AS createdAt FROM notes WHERE id = ?').get(id).createdAt;
+    }
+
+    const { data: createdNote, error: noteError } = await supabase.from('notes').insert({
+        id,
+        user_id: userId,
+        title: note.title,
+        description: note.description,
+        tag: note.tag,
+        due_date: note.dueDate
+    }).select('created_at').single();
+    if (noteError) {
+        await deleteStoredFiles(savedFiles);
+        throw noteError;
+    }
+    if (savedFiles.length > 0) {
+        const { error: attachmentError } = await supabase.from('attachments').insert(savedFiles.map((file) => ({
+            id: file.id,
+            note_id: id,
+            original_name: file.originalName,
+            stored_name: file.storedName,
+            mime_type: file.mimeType,
+            size_bytes: file.sizeBytes
+        })));
+        if (attachmentError) {
+            const { error: rollbackError } = await supabase.from('notes').delete().eq('id', id).eq('user_id', userId);
+            if (rollbackError) {
+                console.error('Could not remove an incomplete note after attachment metadata failed:', rollbackError);
+            }
+            await deleteStoredFiles(savedFiles);
+            throw attachmentError;
+        }
+    }
+    return createdNote.created_at;
+};
+
+const getAttachmentDetails = async (attachmentId, userId) => {
+    if (!useSupabase) {
+        return database.prepare(`
+            SELECT a.id, a.original_name AS name, a.stored_name, a.mime_type AS mimeType,
+                a.size_bytes AS sizeBytes
+            FROM attachments a
+            JOIN notes n ON n.id = a.note_id
+            WHERE a.id = ? AND n.user_id = ?
+        `).get(attachmentId, userId);
+    }
+    const { data: attachment, error } = await supabase.from('attachments')
+        .select('id, note_id, original_name, stored_name, mime_type, size_bytes')
+        .eq('id', attachmentId)
+        .maybeSingle();
+    if (error) {
+        throw error;
+    }
+    if (!attachment) {
+        return null;
+    }
+    const { data: note, error: noteError } = await supabase.from('notes')
+        .select('id')
+        .eq('id', attachment.note_id)
+        .eq('user_id', userId)
+        .maybeSingle();
+    if (noteError) {
+        throw noteError;
+    }
+    return note ? {
+        id: attachment.id,
+        name: attachment.original_name,
+        stored_name: attachment.stored_name,
+        mimeType: attachment.mime_type,
+        sizeBytes: attachment.size_bytes
+    } : null;
+};
+
+const downloadStoredFile = async (storedName) => {
+    if (!useSupabase) {
+        return fs.promises.readFile(path.join(UPLOAD_DIRECTORY, storedName));
+    }
+    const { data, error } = await supabase.storage.from(SUPABASE_STORAGE_BUCKET).download(storedName);
+    if (error) {
+        throw error;
+    }
+    return Buffer.from(await data.arrayBuffer());
+};
+
+const updateNoteForUser = async (noteId, userId, note) => {
+    if (!useSupabase) {
+        return database.prepare(`
+            UPDATE notes SET title = ?, description = ?, tag = ?, due_date = ?
+            WHERE id = ? AND user_id = ?
+        `).run(note.title, note.description, note.tag, note.dueDate, noteId, userId).changes > 0;
+    }
+    const { data, error } = await supabase.from('notes').update({
+        title: note.title,
+        description: note.description,
+        tag: note.tag,
+        due_date: note.dueDate
+    }).eq('id', noteId).eq('user_id', userId).select('id').maybeSingle();
+    if (error) {
+        throw error;
+    }
+    return Boolean(data);
+};
+
+const deleteNoteForUser = async (noteId, userId) => {
+    if (!useSupabase) {
+        const attachmentFiles = database.prepare('SELECT stored_name FROM attachments WHERE note_id = ?').all(noteId);
+        const result = database.prepare('DELETE FROM notes WHERE id = ? AND user_id = ?').run(noteId, userId);
+        if (result.changes === 0) {
+            return false;
+        }
+        await deleteStoredFiles(attachmentFiles);
+        return true;
+    }
+    const { data: note, error: noteError } = await supabase.from('notes')
+        .select('id')
+        .eq('id', noteId)
+        .eq('user_id', userId)
+        .maybeSingle();
+    if (noteError) {
+        throw noteError;
+    }
+    if (!note) {
+        return false;
+    }
+    const { data: attachments, error: attachmentError } = await supabase.from('attachments')
+        .select('stored_name')
+        .eq('note_id', noteId);
+    if (attachmentError) {
+        throw attachmentError;
+    }
+    const { error: deleteError } = await supabase.from('notes').delete()
+        .eq('id', noteId)
+        .eq('user_id', userId);
+    if (deleteError) {
+        throw deleteError;
+    }
+    await deleteStoredFiles(attachments);
+    return true;
+};
 
 const createToken = (userId) => {
     const payload = Buffer.from(JSON.stringify({
@@ -389,15 +709,19 @@ const createServer = () => http.createServer(async (request, response) => {
             }
 
             const normalizedEmail = email.trim().toLowerCase();
-            if (database.prepare('SELECT id FROM users WHERE email = ?').get(normalizedEmail)) {
+            if (await getUserByEmail(normalizedEmail)) {
                 sendJson(response, 409, { success: false, message: 'An account with this email already exists.' });
                 return;
             }
             const salt = crypto.randomBytes(16);
             const passwordHash = await scrypt(password, salt, 64);
             const userId = crypto.randomUUID();
-            database.prepare('INSERT INTO users (id, name, email, password_hash) VALUES (?, ?, ?, ?)')
-                .run(userId, name.trim(), normalizedEmail, `${salt.toString('hex')}:${passwordHash.toString('hex')}`);
+            await createUser(
+                userId,
+                name.trim(),
+                normalizedEmail,
+                `${salt.toString('hex')}:${passwordHash.toString('hex')}`
+            );
             sendJson(response, 201, { success: true, sucess: true, authtoken: createToken(userId) });
             return;
         }
@@ -408,8 +732,7 @@ const createServer = () => http.createServer(async (request, response) => {
                 sendJson(response, 400, { success: false, message: 'Email and password are required.' });
                 return;
             }
-            const user = database.prepare('SELECT id, password_hash FROM users WHERE email = ?')
-                .get(body.email.trim().toLowerCase());
+            const user = await getUserByEmail(body.email.trim().toLowerCase());
             if (!user) {
                 sendJson(response, 401, { success: false, message: 'Email or password is incorrect.' });
                 return;
@@ -433,38 +756,7 @@ const createServer = () => http.createServer(async (request, response) => {
         }
 
         if (request.method === 'GET' && pathname === '/api/notes/fetchallnotes') {
-            const notes = database.prepare(`
-                SELECT id AS _id, title, description, tag,
-                    due_date AS dueDate, created_at AS createdAt
-                FROM notes WHERE user_id = ? ORDER BY created_at DESC
-            `).all(userId);
-            if (notes.length === 0) {
-                sendJson(response, 200, []);
-                return;
-            }
-
-            const placeholders = notes.map(() => '?').join(', ');
-            const attachments = database.prepare(`
-                SELECT id, note_id AS noteId, original_name AS name,
-                    mime_type AS mimeType, size_bytes AS sizeBytes
-                FROM attachments WHERE note_id IN (${placeholders})
-                ORDER BY created_at ASC
-            `).all(...notes.map((note) => note._id));
-            const attachmentsByNote = new Map();
-            for (const attachment of attachments) {
-                const noteAttachments = attachmentsByNote.get(attachment.noteId) || [];
-                noteAttachments.push({
-                    id: attachment.id,
-                    name: attachment.name,
-                    mimeType: attachment.mimeType,
-                    sizeBytes: attachment.sizeBytes
-                });
-                attachmentsByNote.set(attachment.noteId, noteAttachments);
-            }
-            sendJson(response, 200, notes.map((note) => ({
-                ...note,
-                attachments: attachmentsByNote.get(note._id) || []
-            })));
+            sendJson(response, 200, await getNotesForUser(userId));
             return;
         }
 
@@ -473,35 +765,8 @@ const createServer = () => http.createServer(async (request, response) => {
             const note = normalizeNote(fields);
             const attachments = validateAttachments(files);
             const id = crypto.randomUUID();
-            const savedFiles = await saveAttachmentFiles(attachments);
-            let transactionStarted = false;
-            try {
-                database.exec('BEGIN IMMEDIATE');
-                transactionStarted = true;
-                database.prepare(`
-                    INSERT INTO notes (id, user_id, title, description, tag, due_date)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                `).run(id, userId, note.title, note.description, note.tag, note.dueDate);
-                const insertAttachment = database.prepare(`
-                    INSERT INTO attachments (id, note_id, original_name, stored_name, mime_type, size_bytes)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                `);
-                for (const file of savedFiles) {
-                    insertAttachment.run(file.id, id, file.originalName, file.storedName, file.mimeType, file.sizeBytes);
-                }
-                database.exec('COMMIT');
-                transactionStarted = false;
-            } catch (error) {
-                if (transactionStarted) {
-                    database.exec('ROLLBACK');
-                }
-                await Promise.all(savedFiles.map((file) => fs.promises.unlink(file.filePath).catch((cleanupError) => {
-                    console.error(`Could not clean up uploaded file ${file.storedName}:`, cleanupError);
-                })));
-                throw error;
-            }
-            const createdAt = database.prepare('SELECT created_at AS createdAt FROM notes WHERE id = ?')
-                .get(id).createdAt;
+            const savedFiles = await saveAttachmentFiles(attachments, userId, id);
+            const createdAt = await createNoteWithAttachments(id, userId, note, savedFiles);
             sendJson(response, 201, {
                 _id: id,
                 ...note,
@@ -518,13 +783,13 @@ const createServer = () => http.createServer(async (request, response) => {
 
         const attachmentRoute = pathname.match(/^\/api\/attachments\/([^/]+)$/);
         if (request.method === 'GET' && attachmentRoute) {
-            const attachment = getAttachmentDetails(attachmentRoute[1], userId);
+            const attachment = await getAttachmentDetails(attachmentRoute[1], userId);
             if (!attachment) {
                 sendJson(response, 404, { message: 'Attachment not found.' });
                 return;
             }
 
-            const contents = await fs.promises.readFile(path.join(UPLOAD_DIRECTORY, attachment.stored_name));
+            const contents = await downloadStoredFile(attachment.stored_name);
             const safeFilename = attachment.name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100) || 'attachment';
             response.writeHead(200, {
                 'Content-Type': attachment.mimeType,
@@ -548,11 +813,7 @@ const createServer = () => http.createServer(async (request, response) => {
                     return;
                 }
                 const note = normalizeNote(fields);
-                const result = database.prepare(`
-                    UPDATE notes SET title = ?, description = ?, tag = ?, due_date = ?
-                    WHERE id = ? AND user_id = ?
-                `).run(note.title, note.description, note.tag, note.dueDate, noteId, userId);
-                if (result.changes === 0) {
+                if (!await updateNoteForUser(noteId, userId, note)) {
                     sendJson(response, 404, { message: 'Note not found.' });
                     return;
                 }
@@ -560,20 +821,10 @@ const createServer = () => http.createServer(async (request, response) => {
                 return;
             }
             if (action === 'deletenote' && request.method === 'DELETE') {
-                const attachmentFiles = database.prepare('SELECT stored_name FROM attachments WHERE note_id = ?')
-                    .all(noteId);
-                const result = database.prepare('DELETE FROM notes WHERE id = ? AND user_id = ?').run(noteId, userId);
-                if (result.changes === 0) {
+                if (!await deleteNoteForUser(noteId, userId)) {
                     sendJson(response, 404, { message: 'Note not found.' });
                     return;
                 }
-                await Promise.all(attachmentFiles.map(({ stored_name: storedName }) => (
-                    fs.promises.unlink(path.join(UPLOAD_DIRECTORY, storedName)).catch((error) => {
-                        if (error.code !== 'ENOENT') {
-                            console.error(`Could not delete uploaded file ${storedName}:`, error);
-                        }
-                    })
-                )));
                 sendJson(response, 200, { success: true });
                 return;
             }
@@ -584,7 +835,7 @@ const createServer = () => http.createServer(async (request, response) => {
         if (response.headersSent || response.destroyed) {
             return;
         }
-        if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+        if (error.code === 'SQLITE_CONSTRAINT_UNIQUE' || error.code === '23505') {
             sendJson(response, 409, { success: false, message: 'An account with this email already exists.' });
             return;
         }
@@ -615,6 +866,7 @@ if (require.main === module) {
 module.exports = {
     createServer,
     database,
+    useSupabase,
     validateAttachments,
     MAX_ATTACHMENT_SIZE,
     MAX_TOTAL_ATTACHMENT_SIZE

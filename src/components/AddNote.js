@@ -2,7 +2,7 @@ import React, { useContext, useRef, useState } from 'react';
 import noteContext from '../context/notes/noteContext';
 
 const MAX_ATTACHMENTS = 5;
-const MAX_ATTACHMENT_SIZE = 200 * 1024 * 1024;
+const MAX_ATTACHMENT_SIZE = 50 * 1024 * 1024;
 const MAX_TOTAL_ATTACHMENT_SIZE = 200 * 1024 * 1024;
 const ALLOWED_FILE_TYPES = new Set([
     'image/jpeg',
@@ -45,7 +45,7 @@ const AddNote = () => {
         }
         const totalSize = attachments.concat(selectedFiles).reduce((total, file) => total + file.size, 0);
         if (totalSize > MAX_TOTAL_ATTACHMENT_SIZE) {
-            setError('Attachments must total 45 MB or less.');
+            setError('Attachments must total 200 MB or less.');
             return;
         }
         const invalidType = selectedFiles.find((file) => !ALLOWED_FILE_TYPES.has(file.type));
@@ -55,7 +55,7 @@ const AddNote = () => {
         }
         const oversizedFile = selectedFiles.find((file) => file.size > MAX_ATTACHMENT_SIZE);
         if (oversizedFile) {
-            setError(`${oversizedFile.name} is larger than the 200 MB per-file limit.`);
+            setError(`${oversizedFile.name} is larger than the 50 MB per-file limit on the free storage plan.`);
             return;
         }
         setAttachments((currentFiles) => currentFiles.concat(selectedFiles));
@@ -161,7 +161,7 @@ const AddNote = () => {
                             <span className="attachment-picker-icon" aria-hidden="true">＋</span>
                             <span className="attachment-picker-copy">
                                 <strong>Add images, PDFs or videos</strong>
-                                <span id="attachment-hint">Up to 5 files · 200 MB per file and 200 MB total · JPG, PNG, GIF, WebP, PDF, MP4 or WebM</span>
+                                <span id="attachment-hint">Up to 5 files · 50 MB per file and 200 MB total · JPG, PNG, GIF, WebP, PDF, MP4 or WebM</span>
                             </span>
                             <span className="attachment-picker-action">Browse files</span>
                         </button>
